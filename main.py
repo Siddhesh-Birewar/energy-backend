@@ -3,12 +3,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import duckdb
-from langchain_community.vectorstores import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
 
 app = FastAPI(title="Energy Grid API")
 
@@ -24,18 +18,30 @@ app.add_middleware(
 def health_check():
     return {"status": "active", "service": "Energy Grid RAG API"}
 
-# Load ChromaDB from local folder
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
-retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+# Lazy-loaded globals to prevent RAM spike on startup
+_rag_chain = None
 
-llm = ChatGroq(
-    model="llama-3.1-8b-instant",
-    temperature=0.1,
-    groq_api_key=os.getenv("GROQ_API_KEY")
-)
+def get_rag_chain():
+    global _rag_chain
+    if _rag_chain is None:
+        from langchain_community.vectorstores import Chroma
+        from langchain_huggingface import HuggingFaceEmbeddings
+        from langchain_groq import ChatGroq
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
+        from langchain_core.runnables import RunnablePassthrough
 
-template = """You are an expert energy research assistant.
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})  # Reduced k to 3 to save memory
+
+        llm = ChatGroq(
+            model="llama-3.1-8b-instant",
+            temperature=0.1,
+            groq_api_key=os.getenv("GROQ_API_KEY")
+        )
+
+        template = """You are an expert energy research assistant.
 Answer the question based ONLY on the following context. If the answer is not contained, say "I do not have enough information to answer that."
 
 Context:
@@ -45,17 +51,18 @@ Question: {question}
 
 Answer:"""
 
-prompt = ChatPromptTemplate.from_template(template)
+        prompt = ChatPromptTemplate.from_template(template)
 
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+        def format_docs(docs):
+            return "\n\n".join(doc.page_content for doc in docs)
 
-rag_chain = (
-    {"context": retriever | format_docs, "question": RunnablePassthrough()}
-    | prompt
-    | llm
-    | StrOutputParser()
-)
+        _rag_chain = (
+            {"context": retriever | format_docs, "question": RunnablePassthrough()}
+            | prompt
+            | llm
+            | StrOutputParser()
+        )
+    return _rag_chain
 
 class QueryRequest(BaseModel):
     question: str
@@ -63,7 +70,8 @@ class QueryRequest(BaseModel):
 @app.post("/api/query")
 def query_rag(req: QueryRequest):
     try:
-        answer = rag_chain.invoke(req.question)
+        chain = get_rag_chain()
+        answer = chain.invoke(req.question)
         return {"answer": answer}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
