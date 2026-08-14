@@ -1,0 +1,11 @@
+fastapi==0.112.0
+uvicorn==0.30.5
+pydantic==2.8.2
+langchain-core==0.2.35
+langchain-community==0.2.12
+langchain-groq==0.1.9
+langchain-huggingface==0.0.3
+chromadb==0.5.5
+duckdb==1.0.0
+sentence-transformers==3.0.1
+pypdf==4.3.1
